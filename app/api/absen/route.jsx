@@ -1,3 +1,5 @@
+import { kv } from "@vercel/kv";
+
 // ====== WAKTU WITA ======
 function getWitaTime() {
   return new Date(
@@ -12,23 +14,23 @@ function getAbsensiType(now) {
   const day = now.getDay(); // 0 = Minggu
   const minutes = now.getHours() * 60 + now.getMinutes();
 
-  if (day === 0 || day === 6) return null; // Weekend
+  if (day === 0 || day === 6) return null;
 
   // Jumat
   if (day === 5) {
-    if (minutes >= 360 && minutes <= 420) return "masuk"; // 06:00–07:00
-    if (minutes >= 990 && minutes <= 1050) return "pulang"; // 16:30–17:30
+    if (minutes >= 360 && minutes <= 420) return "masuk";
+    if (minutes >= 990 && minutes <= 1050) return "pulang";
     return null;
   }
 
   // Senin–Kamis
-  if (minutes >= 360 && minutes <= 420) return "masuk"; // 06:00–07:00
-  if (minutes >= 960 && minutes <= 1020) return "pulang"; // 16:00–17:00
+  if (minutes >= 360 && minutes <= 420) return "masuk";
+  if (minutes >= 960 && minutes <= 1020) return "pulang";
 
   return null;
 }
 
-// ====== LOKASI RANDOM < 20m ======
+// ====== LOKASI RANDOM < 20M ======
 function randomOffset(maxMeters = 20) {
   return (Math.random() - 0.5) * (maxMeters / 111320);
 }
@@ -56,9 +58,24 @@ export async function GET() {
     });
   }
 
+  const dateKey = now.toISOString().slice(0, 10); // YYYY-MM-DD
+  const kvKey = `absen:${dateKey}:${type}`;
+
+  // 🔐 CEK SUDAH ABSEN?
+  const already = await kv.get(kvKey);
+  if (already) {
+    return Response.json({
+      status: "SKIP",
+      reason: "Already absented",
+      type,
+      date: dateKey,
+    });
+  }
+
+  // 📍 LOKASI HARI INI
   const location = generateLocation();
 
-  // ⚠️ SIMULASI (nanti ganti API absensi asli)
+  // ⬇️ SIMULASI ABSENSI
   const payload = {
     status: "SUCCESS",
     type,
@@ -67,6 +84,11 @@ export async function GET() {
   };
 
   console.log("ABSENSI:", payload);
+
+  // 🔐 SIMPAN KE KV (AUTO RESET 24 JAM)
+  await kv.set(kvKey, payload, {
+    ex: 60 * 60 * 24,
+  });
 
   return Response.json(payload);
 }
