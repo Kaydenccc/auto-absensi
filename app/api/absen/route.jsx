@@ -84,6 +84,7 @@ export async function GET() {
   };
 
   console.log("ABSENSI:", payload);
+  console.log("CRON CHECK", new Date().toISOString());
 
   // 🔐 SIMPAN KE KV (AUTO RESET 24 JAM)
   await kv.set(kvKey, payload, {
