@@ -7,8 +7,6 @@ const OFFICE = {
   lat: -3.2795460218952925,
   lng: 119.85262806281504,
 };
-const MAX_RETRY = 5;
-const MAX_DISTANCE = 20;
 
 export async function GET(req) {
   const { searchParams } = new URL(req.url);
