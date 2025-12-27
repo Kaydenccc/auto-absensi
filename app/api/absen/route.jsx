@@ -81,10 +81,20 @@ export async function GET(req) {
     // longitude: location.lng,
   };
 
+  // Ubah payload menjadi x-www-form-urlencoded
+  const formBody = Object.entries(payload)
+    .map(
+      ([key, value]) =>
+        encodeURIComponent(key) + "=" + encodeURIComponent(value)
+    )
+    .join("&");
+
   const res = await fetch(TARGET_URL, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+    body: formBody,
   });
 
   if (!res.ok) {
