@@ -14,9 +14,9 @@ export async function GET(req) {
   /* =====================
      SECURITY
   ====================== */
-  if (searchParams.get("secret") !== process.env.ABSEN_SECRET) {
-    return Response.json({ error: "Unauthorized" }, { status: 401 });
-  }
+  // if (searchParams.get("secret") !== process.env.ABSEN_SECRET) {
+  //   return Response.json({ error: "Unauthorized" }, { status: 401 });
+  // }
 
   const NIP = process.env.ABSEN_NIP;
   const TARGET_URL = process.env.ABSEN_TARGET_URL;
