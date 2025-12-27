@@ -1,95 +1,123 @@
 import { kv } from "@vercel/kv";
+import { DateTime } from "luxon";
+import { randomLocation } from "@/lib/geo";
+import { sendTelegram } from "@/lib/telegram";
 
-// ====== WAKTU WITA ======
-function getWitaTime() {
-  return new Date(
-    new Date().toLocaleString("en-US", {
-      timeZone: "Asia/Makassar",
-    })
-  );
-}
+const OFFICE = {
+  lat: -3.2795460218952925,
+  lng: 119.85262806281504,
+};
+const MAX_RETRY = 5;
+const MAX_DISTANCE = 20;
 
-// ====== WINDOW ABSENSI ======
-function getAbsensiType(now) {
-  const day = now.getDay(); // 0 = Minggu
-  const minutes = now.getHours() * 60 + now.getMinutes();
+export async function GET(req) {
+  const { searchParams } = new URL(req.url);
 
-  if (day === 0 || day === 6) return null;
-
-  // Jumat
-  if (day === 5) {
-    if (minutes >= 360 && minutes <= 420) return "masuk";
-    if (minutes >= 990 && minutes <= 1050) return "pulang";
-    return null;
+  /* =====================
+     SECURITY
+  ====================== */
+  if (searchParams.get("secret") !== process.env.ABSEN_SECRET) {
+    return Response.json({ error: "Unauthorized" }, { status: 401 });
   }
+
+  const NIP = process.env.ABSEN_NIP;
+  const TARGET_URL = process.env.ABSEN_TARGET_URL;
+
+  if (!NIP || !TARGET_URL) {
+    return Response.json(
+      { error: "Konfigurasi ENV belum lengkap" },
+      { status: 500 }
+    );
+  }
+
+  /* =====================
+     TIME (WITA)
+  ====================== */
+  const now = DateTime.now().setZone("Asia/Makassar");
+  const weekday = now.weekday; // 1=Senin, 5=Jumat
+
+  if (weekday > 5) {
+    return Response.json({ status: "libur" });
+  }
+
+  let type = null;
 
   // Senin–Kamis
-  if (minutes >= 360 && minutes <= 420) return "masuk";
-  if (minutes >= 960 && minutes <= 1020) return "pulang";
+  if (weekday >= 1 && weekday <= 4) {
+    if (now.hour >= 6 && now.hour < 7) type = "masuk";
+    if (now.hour >= 16 && now.hour < 17) type = "pulang";
+  }
 
-  return null;
-}
-
-// ====== LOKASI RANDOM < 20M ======
-function randomOffset(maxMeters = 20) {
-  return (Math.random() - 0.5) * (maxMeters / 111320);
-}
-
-function generateLocation() {
-  const baseLat = -3.2795460218952925;
-  const baseLng = 119.85262806281504;
-
-  return {
-    lat: baseLat + randomOffset(),
-    lng: baseLng + randomOffset(),
-  };
-}
-
-// ====== ENDPOINT ======
-export async function GET() {
-  const now = getWitaTime();
-  const type = getAbsensiType(now);
+  // Jumat
+  if (weekday === 5) {
+    if (now.hour >= 6 && now.hour < 7) type = "masuk";
+    if (now.hour >= 16 && now.hour < 18) type = "pulang";
+  }
 
   if (!type) {
-    return Response.json({
-      status: "SKIP",
-      reason: "Outside absensi window",
-      time: now.toISOString(),
-    });
+    return Response.json({ status: "di_luar_jam_absen" });
   }
 
-  const dateKey = now.toISOString().slice(0, 10); // YYYY-MM-DD
-  const kvKey = `absen:${dateKey}:${type}`;
-
-  // 🔐 CEK SUDAH ABSEN?
-  const already = await kv.get(kvKey);
-  if (already) {
-    return Response.json({
-      status: "SKIP",
-      reason: "Already absented",
-      type,
-      date: dateKey,
-    });
+  /* =====================
+     ANTI DOUBLE ABSEN
+  ====================== */
+  const key = `absen:${now.toISODate()}:${type}`;
+  if (await kv.get(key)) {
+    return Response.json({ status: "sudah_absen" });
   }
 
-  // 📍 LOKASI HARI INI
-  const location = generateLocation();
+  /* =====================
+     RANDOM LOKASI
+  ====================== */
+  const location = randomLocation(OFFICE.lat, OFFICE.lng);
 
-  // ⬇️ SIMULASI ABSENSI
+  /* =====================
+     KIRIM KE ENDPOINT ABSENSI ASLI
+  ====================== */
   const payload = {
-    status: "SUCCESS",
-    type,
-    time: now.toISOString(),
-    location,
+    nip: NIP,
+    lokasi: `${location.lat},${location.lng}`,
+    // latitude: location.lat,
+    // longitude: location.lng,
   };
 
-  console.log("ABSENSI:", payload);
-  console.log("CRON CHECK", new Date().toISOString());
-
-  // 🔐 SIMPAN KE KV (AUTO RESET 24 JAM)
-  await kv.set(kvKey, payload, {
-    ex: 60 * 60 * 24,
+  const res = await fetch(TARGET_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
   });
 
-  return Response.json(payload);
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Gagal absen: ${text}`);
+  }
+
+  /* =====================
+     SIMPAN LOG (ANTI DOUBLE)
+  ====================== */
+  await kv.set(key, {
+    nip: NIP,
+    type,
+    time: now.toISO(),
+    location,
+  });
+
+  /* =====================
+     TELEGRAM NOTIF
+  ====================== */
+  await sendTelegram(`
+✅ <b>ABSEN ${type.toUpperCase()} BERHASIL</b>
+
+👤 NIP: <b>${NIP}</b>
+📅 ${now.toFormat("cccc, dd LLL yyyy")}
+⏰ ${now.toFormat("HH:mm")} WITA
+📍 Jarak dari kantor: <b>${location.distance} meter</b>
+`);
+
+  return Response.json({
+    status: "success",
+    type,
+    nip: NIP,
+    location,
+  });
 }
