@@ -8,34 +8,37 @@ const OFFICE = {
   lng: 119.85262806281504,
 };
 
-export async function GET(req) {
-  const { searchParams } = new URL(req.url);
+export default async function handler(req, res) {
+  // Hanya izinkan GET
+  if (req.method !== "GET") {
+    return res.status(405).json({ error: "Method not allowed" });
+  }
 
-  /* =====================
-     SECURITY
-  ====================== */
-  if (searchParams.get("secret") !== process.env.ABSEN_SECRET) {
-    return Response.json({ error: "Unauthorized" }, { status: 401 });
+  const url = new URL(req.url, `http://${req.headers.host}`);
+  const secret = url.searchParams.get("secret");
+
+  // =====================
+  // SECURITY
+  // =====================
+  if (secret !== process.env.ABSEN_SECRET) {
+    return res.status(401).json({ error: "Unauthorized" });
   }
 
   const NIP = process.env.ABSEN_NIP;
   const TARGET_URL = process.env.ABSEN_TARGET_URL;
 
   if (!NIP || !TARGET_URL) {
-    return Response.json(
-      { error: "Konfigurasi ENV belum lengkap" },
-      { status: 500 }
-    );
+    return res.status(500).json({ error: "Konfigurasi ENV belum lengkap" });
   }
 
-  /* =====================
-     TIME (WITA)
-  ====================== */
+  // =====================
+  // TIME (WITA)
+  // =====================
   const now = DateTime.now().setZone("Asia/Makassar");
   const weekday = now.weekday; // 1=Senin, 5=Jumat
 
   if (weekday > 5) {
-    return Response.json({ status: "libur" });
+    return res.json({ status: "libur" });
   }
 
   let type = null;
@@ -53,56 +56,55 @@ export async function GET(req) {
   }
 
   if (!type) {
-    return Response.json({ status: "di_luar_jam_absen" });
+    return res.json({ status: "di_luar_jam_absen" });
   }
 
-  /* =====================
-     ANTI DOUBLE ABSEN
-  ====================== */
+  // =====================
+  // ANTI DOUBLE ABSEN
+  // =====================
   const key = `absen:${now.toISODate()}:${type}`;
   if (await kv.get(key)) {
-    return Response.json({ status: "sudah_absen" });
+    return res.json({ status: "sudah_absen" });
   }
 
-  /* =====================
-     RANDOM LOKASI
-  ====================== */
+  // =====================
+  // RANDOM LOKASI
+  // =====================
   const location = randomLocation(OFFICE.lat, OFFICE.lng);
 
-  /* =====================
-     KIRIM KE ENDPOINT ABSENSI ASLI
-  ====================== */
+  // =====================
+  // KIRIM KE ENDPOINT ABSENSI ASLI
+  // =====================
   const payload = {
     nip: NIP,
     lokasi: `${location.lat},${location.lng}`,
-    // latitude: location.lat,
-    // longitude: location.lng,
   };
 
-  // Ubah payload menjadi x-www-form-urlencoded
   const formBody = Object.entries(payload)
-    .map(
-      ([key, value]) =>
-        encodeURIComponent(key) + "=" + encodeURIComponent(value)
-    )
+    .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`)
     .join("&");
 
-  const res = await fetch(TARGET_URL, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/x-www-form-urlencoded",
-    },
-    body: formBody,
-  });
+  try {
+    const fetchRes = await fetch(TARGET_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "User-Agent": "Mozilla/5.0 (Vercel Cron)",
+      },
+      body: formBody,
+    });
 
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Gagal absen: ${text}`);
+    if (!fetchRes.ok) {
+      const text = await fetchRes.text();
+      return res.status(fetchRes.status).json({ error: text });
+    }
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
   }
 
-  /* =====================
-     SIMPAN LOG (ANTI DOUBLE)
-  ====================== */
+  // =====================
+  // SIMPAN LOG (ANTI DOUBLE)
+  // =====================
   await kv.set(key, {
     nip: NIP,
     type,
@@ -110,9 +112,9 @@ export async function GET(req) {
     location,
   });
 
-  /* =====================
-     TELEGRAM NOTIF
-  ====================== */
+  // =====================
+  // TELEGRAM NOTIF
+  // =====================
   await sendTelegram(`
 ✅ <b>ABSEN ${type.toUpperCase()} BERHASIL</b>
 
@@ -122,7 +124,7 @@ export async function GET(req) {
 📍 Jarak dari kantor: <b>${location.distance} meter</b>
 `);
 
-  return Response.json({
+  return res.json({
     status: "success",
     type,
     nip: NIP,
